@@ -58,7 +58,7 @@ def _commit_go_mod_updates(gitwd, source):
         for filename in ["go.mod", "go.sum"]:
             if not os.path.exists(filename):
                 continue
-            gitwd.remotes.source.repo.git.checkout(f"source/{source.branch}", filename)
+            gitwd.remotes.source.repo.git.checkout(f"source/{source.reference}", filename)
 
         proc = subprocess.run(
             "go mod tidy", shell=True, check=True, capture_output=True
@@ -87,13 +87,14 @@ def _commit_go_mod_updates(gitwd, source):
             raise err
 
 
-def _do_rebase(gitwd, source):
+def _do_rebase(gitwd, source, theirs, ours):
     logging.info("Performing rebase")
+    commit_hash = gitwd.git.rev_parse(source.reference)
     try:
-        gitwd.git.rebase(f"source/{source.branch}", "-Xtheirs")
+        gitwd.git.merge(commit_hash)
     except git.GitCommandError as ex:
-        if not _resolve_rebase_conflicts(gitwd):
-            raise RepoException(f"Git rebase failed: {ex}") from ex
+        _resolve_rebase_conflicts(gitwd, theirs, ours)
+        raise RepoException(f"Git rebase failed: {ex}") from ex
 
 
 def _resolve_conflict(gitwd):
@@ -135,24 +136,25 @@ def _resolve_conflict(gitwd):
     return True
 
 
-def _resolve_rebase_conflicts(gitwd):
-    try:
-        if not _resolve_conflict(gitwd):
-            return False
+def _resolve_rebase_conflicts(gitwd, theirs, ours):
+    if theirs:
+        gitwd.git.checkout("--theirs", theirs)
+        gitwd.git.add(theirs)
+    if ours:
+        gitwd.git.checkout("--ours", ours)
+        gitwd.git.add(ours)
 
-        logging.info("Rebase conflict has been resolved. Continue rebasing.")
+    logging.info("Rebase conflict has been resolved. Continue rebasing.")
 
-        gitwd.git.rebase("--continue")
+    gitwd.git.merge("--continue")
 
-        return True
-    except git.GitCommandError:
-        return _resolve_rebase_conflicts(gitwd)
+    return True
 
 
 def _is_push_required(gitwd, dest, source, rebase):
     # Check if the source head is already in dest
     try:
-        source_head_commit = getattr(gitwd.remotes.source.refs, source.branch).commit
+        source_head_commit = getattr(gitwd.remotes.source.refs, source.reference).commit
         branches_with_commit = gitwd.git.branch("-r", "--contains", source_head_commit)
         if f"dest/{dest.branch}" in branches_with_commit:
             logging.info("Dest branch already contains all latest changes.")
@@ -200,7 +202,7 @@ def _create_pr(gh_app, dest, source, rebase):
     gh_pr = gh_app._post(
         f"https://api.github.com/repos/{dest.ns}/{dest.name}/pulls",
         data={
-            "title": f"Merge {source.url}:{source.branch} into {dest.branch}",
+            "title": f"Merge {source.url}:{source.reference} into {dest.branch}",
             "head": f"{rebase.ns}:{rebase.branch}",
             "base": dest.branch,
             "maintainer_can_modify": False,
@@ -294,11 +296,13 @@ def _init_working_dir(
         if git_username != "":
             config.set_value("user", "name", git_username)
         config.set_value("merge", "renameLimit", 999999)
+        config.set_value("core", "editor", "/bin/true")
 
     logging.info("Fetching %s from dest", dest.branch)
     gitwd.remotes.dest.fetch(dest.branch)
-    logging.info("Fetching %s from source", source.branch)
-    gitwd.remotes.source.fetch(source.branch)
+    logging.info("Fetching %s and all tags from source", source.reference)
+    gitwd.remotes.source.fetch(source.reference)
+    gitwd.remotes.source.fetch("--tags")
 
     working_branch = f"dest/{dest.branch}"
     logging.info("Checking out %s", working_branch)
@@ -325,6 +329,8 @@ def run(
     source,
     dest,
     rebase,
+    theirs,
+    ours,
     working_dir,
     git_username,
     git_email,
@@ -410,7 +416,7 @@ def run(
         return False
 
     try:
-        _do_rebase(gitwd, source)
+        _do_rebase(gitwd, source, theirs, ours)
 
         if update_go_modules:
             _commit_go_mod_updates(gitwd, source)
@@ -419,7 +425,7 @@ def run(
         _message_slack(
             slack_webhook,
             f"Manual intervention is needed to rebase "
-            f"{source.url}:{source.branch} "
+            f"{source.url}:{source.reference} "
             f"into {dest.ns}/{dest.name}:{dest.branch}: "
             f"{ex}",
         )
@@ -429,7 +435,7 @@ def run(
         _message_slack(
             slack_webhook,
             f"I got an error trying to rebase "
-            f"{source.url}:{source.branch} "
+            f"{source.url}:{source.reference} "
             f"into {dest.ns}/{dest.name}:{dest.branch}: "
             f"{ex}",
         )

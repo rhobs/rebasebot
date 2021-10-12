@@ -26,7 +26,7 @@ from rebasebot import bot
 
 
 GitHubBranch = namedtuple("GitHubBranch", ["url", "ns", "name", "branch"])
-GitBranch = namedtuple("GitBranch", ["url", "branch"])
+GitBranch = namedtuple("GitBranch", ["url", "reference"])
 
 
 class GitHubBranchAction(argparse.Action):
@@ -39,12 +39,13 @@ class GitHubBranchAction(argparse.Action):
 
     GITHUBBRANCH = re.compile("^(?P<ns>[^/]+)/(?P<name>[^:]+):(?P<branch>.*)$")
 
+
     def __call__(self, parser, namespace, values, option_string=None):
-        match = self.GITHUBBRANCH.match(values)
+        match = self.GITHUBBRANCH.match(values) or self.GITHUB_SEMVER_TAG.match(values) or self.GITHUB_SHA1.match(values)
         if match is None:
             parser.error(
                 f"GitHub branch value for {option_string} must be in "
-                f"the form <user or organisation>/<repo>:<branch>"
+                f"the form <user or organisation>/<repo>:[<branch>|<tag>|sha1>]"
             )
 
         setattr(
@@ -62,26 +63,26 @@ class GitHubBranchAction(argparse.Action):
 class GitBranchAction(argparse.Action):
     """An action to take a git branch argument in the form:
 
-      <git url>:<branch>
+      <git url>:<reference>
 
     The argument will be return as a GitBranch object.
     """
 
     def __call__(self, parser, namespace, values, option_string=None):
         msg = (
-            f"Git branch value for {option_string} must be in "
-            f"the form <git url>:<branch>"
+            f"Git ref value for {option_string} must be in "
+            f"the form <git url>:<reference>"
         )
 
         split = values.rsplit(":", 1)
         if len(split) != 2:
             parser.error(msg)
 
-        url, branch = split
+        url, reference = split
         if not validators.url(url):
             parser.error(msg)
 
-        setattr(namespace, self.dest, GitBranch(url, branch))
+        setattr(namespace, self.dest, GitBranch(url, reference))
 
 
 # parse_cli_arguments parses command line arguments using argparse and returns
@@ -117,9 +118,23 @@ def _parse_cli_arguments(testing_args=None):
         help=f"The destination/downstream GitHub repo to merge changes into {_form_text}",
     )
     parser.add_argument(
+        "--ours",
+        type=str,
+        required=False,
+        action='append',
+        help=f"Files which can be resolved using 'git checkout --ours' action",
+    )
+    parser.add_argument(
+        "--theirs",
+        type=str,
+        required=False,
+        action='append',
+        help=f"Files which can be resolved using 'git checkout --theirs' action",
+    )
+    parser.add_argument(
         "--rebase",
         type=str,
-        required=True,
+        required=False,
         action=GitHubBranchAction,
         help=f"The base GitHub repo that will be used to create a pull request {_form_text}",
     )
@@ -234,6 +249,8 @@ def main():
         args.source,
         args.dest,
         args.rebase,
+        args.theirs,
+        args.ours,
         args.working_dir,
         args.git_username,
         args.git_email,

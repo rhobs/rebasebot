@@ -9,7 +9,7 @@ ENV PATH="/usr/local/go/bin:$PATH"
 
 WORKDIR /src
 COPY . .
-RUN python -m pip install .
+RUN python -m pip install --no-cache-dir .
 
 WORKDIR /working
 RUN rm -rf /src
