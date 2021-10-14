@@ -40,7 +40,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-CREDENTIALS_DIR = "/dev/shm/credentials"
+CREDENTIALS_DIR = os.getenv("CREDENTIALS_DIR", "/dev/shm/credentials")
+print(CREDENTIALS_DIR)
 app_credentials = os.path.join(CREDENTIALS_DIR, "app")
 cloner_credentials = os.path.join(CREDENTIALS_DIR, "cloner")
 user_credentials = os.path.join(CREDENTIALS_DIR, "user")
@@ -86,12 +87,51 @@ def _commit_go_mod_updates(gitwd, source):
             err.extra_info = "Unable to commit go module changes in git"
             raise err
 
+def _commit_jsonnet_deps_updates(gitwd):
+    try:
+        # Clean repo
+        proc = subprocess.run(
+            "make clean", shell=True, check=True, capture_output=True
+        )
+        logging.debug("make clean output: %s", proc.stdout.decode())
+
+        proc = subprocess.run(
+            "make update", shell=True, check=True, capture_output=True
+        )
+        logging.debug("make update output: %s", proc.stdout.decode())
+        proc = subprocess.run(
+            "make generate", shell=True, check=True, capture_output=True
+        )
+        logging.debug("make generate output: %s", proc.stdout.decode())
+
+        gitwd.git.add(all=True)
+    except subprocess.CalledProcessError as err:
+        raise RepoException(
+            f"Unable to update jsonnet modules: {err}: {err.stderr.decode()}"
+        ) from err
+
+    if gitwd.is_dirty():
+        try:
+            gitwd.git.add(all=True)
+            gitwd.git.commit(
+                "-m", "jsonnet: update dependencies to latest"
+            )
+        except Exception as err:
+            err.extra_info = "Unable to commit jsonnet changes in git"
+            raise err
+
 
 def _do_rebase(gitwd, source, theirs, ours):
     logging.info("Performing rebase")
-    commit_hash = gitwd.git.rev_parse(source.reference)
+    def find_valid_ref():
+        for ref in [source.reference, f"source/{source.reference}"]:
+            try:
+                gitwd.git.rev_parse(ref)
+                return ref
+            except git.GitCommandError:
+                pass
     try:
-        gitwd.git.merge(commit_hash)
+        gitwd.git.merge(find_valid_ref())
     except git.GitCommandError as ex:
         _resolve_rebase_conflicts(gitwd, theirs, ours)
         raise RepoException(f"Git rebase failed: {ex}") from ex
@@ -153,16 +193,16 @@ def _resolve_rebase_conflicts(gitwd, theirs, ours):
 
 def _is_push_required(gitwd, dest, source, rebase):
     # Check if the source head is already in dest
-    try:
-        source_head_commit = getattr(gitwd.remotes.source.refs, source.reference).commit
-        branches_with_commit = gitwd.git.branch("-r", "--contains", source_head_commit)
-        if f"dest/{dest.branch}" in branches_with_commit:
-            logging.info("Dest branch already contains all latest changes.")
-            return False
-    except git.GitCommandError:
-        # if the source head hasn't been found in the dest repo git returns an error. In this case
-        # we need to ignore it and report that we need to perform a push.
-        pass
+    # try:
+    #     source_head_commit = getattr(gitwd.remotes.source.refs, source.reference).commit
+    #     branches_with_commit = gitwd.git.branch("-r", "--contains", source_head_commit)
+    #     if f"dest/{dest.branch}" in branches_with_commit:
+    #         logging.info("Dest branch already contains all latest changes.")
+    #         return False
+    # except git.GitCommandError:
+    #     # if the source head hasn't been found in the dest repo git returns an error. In this case
+    #     # we need to ignore it and report that we need to perform a push.
+    #     pass
 
     # Check if there is nothing to update in the open rebase PR.
     if rebase.branch in gitwd.remotes.rebase.refs:
@@ -246,6 +286,79 @@ def _github_login_for_repo(gh_app, gh_account, gh_repo_name, gh_app_id, gh_app_k
     return gh_app
 
 
+def fetch_source(gitwd, source):
+    gitwd.remotes.source.fetch(source.reference)
+    gitwd.remotes.source.fetch("--tags")
+
+def prepare_branches(gitwd, source, dest, rebase):
+    repos = [
+        ("dest", dest.url),
+        ("rebase", rebase.url),
+    ]
+    if source:
+        repos.append(("source", source.url))
+    for remote, url in repos:
+        if remote in gitwd.remotes:
+            gitwd.remotes[remote].set_url(url)
+        else:
+            gitwd.create_remote(remote, url)
+
+    logging.info("Fetching %s from dest", dest.branch)
+    gitwd.remotes.dest.fetch(dest.branch)
+
+    working_branch = f"dest/{dest.branch}"
+    logging.info("Checking out %s", working_branch)
+
+    logging.info(
+        "Checking for existing rebase branch %s in %s", rebase.branch, rebase.url)
+    rebase_ref = gitwd.git.ls_remote("rebase", rebase.branch, heads=True)
+    if len(rebase_ref) > 0:
+        logging.info("Fetching existing rebase branch")
+        gitwd.remotes.rebase.fetch(rebase.branch)
+
+    head_commit = gitwd.remotes.dest.refs.master.commit
+    if "rebase" in gitwd.heads:
+        gitwd.heads.rebase.set_commit(head_commit)
+    else:
+        gitwd.create_head("rebase", head_commit)
+    gitwd.head.reference = gitwd.heads.rebase
+    gitwd.head.reset(index=True, working_tree=True)
+
+def add_remote(gitwd, repos):
+
+def create_git_config(gitwd):
+    with self.gitwd.config_writer() as config:
+        config.set_value("credential", "username", "x-access-token")
+        config.set_value("credential", "useHttpPath", "true")
+
+        if not user_auth:
+            for repo, credentials in [
+                (dest.url, app_credentials),
+                (rebase.url, cloner_credentials),
+            ]:
+                config.set_value(
+                    f'credential "{repo}"',
+                    "helper",
+                    f'"!f() {{ echo "password=$(cat {credentials})"; }}; f"',
+                )
+        else:
+            for repo, credentials in [
+                (dest.url, user_credentials),
+                (rebase.url, user_credentials),
+            ]:
+                config.set_value(
+                    f'credential "{repo}"',
+                    "helper",
+                    f'"!f() {{ echo "password=$(cat {credentials})"; }}; f"',
+                )
+
+        if git_email != "":
+            config.set_value("user", "email", git_email)
+        if git_username != "":
+            config.set_value("user", "name", git_username)
+        config.set_value("merge", "renameLimit", 999999)
+        config.set_value("core", "editor", "/bin/true")
+
 def _init_working_dir(
     source,
     dest,
@@ -254,8 +367,8 @@ def _init_working_dir(
     git_username,
     git_email,
 ):
-    gitwd = git.Repo.init(path=".")
 
+    gitwd = git.Repo.init(path=".")
     for remote, url in [
         ("source", source.url),
         ("dest", dest.url),
@@ -341,6 +454,7 @@ def run(
     gh_cloner_key,
     slack_webhook,
     update_go_modules=False,
+    update_jsonnet_deps=False,
     dry_run=False,
 ):
     """Run Rebase Bot."""
@@ -420,6 +534,9 @@ def run(
 
         if update_go_modules:
             _commit_go_mod_updates(gitwd, source)
+        if update_jsonnet_deps:
+            _commit_jsonnet_deps_updates(gitwd)
+
     except RepoException as ex:
         logging.error(ex)
         _message_slack(
