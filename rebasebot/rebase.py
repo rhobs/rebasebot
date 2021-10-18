@@ -19,14 +19,16 @@ def _resolve_conflict(gitwd):
         if file_status not in allowed_conflict_prefixes:
             # There is a conflict we can't resolve
             return False
-        filename = line[3:].rstrip('\n')
+        filename = line[3:].rstrip("\n")
         # Special characters are escaped
         if filename[0] == filename[-1] == '"':
             filename = filename[1:-1]
-            filename = filename.encode('ascii').\
-                decode('unicode_escape').\
-                encode('latin1').\
-                decode(git.compat.defenc)
+            filename = (
+                filename.encode("ascii")
+                .decode("unicode_escape")
+                .encode("latin1")
+                .decode(git.compat.defenc)
+            )
         ud_files.append(filename)
 
     for ud_file in ud_files:
@@ -35,6 +37,3 @@ def _resolve_conflict(gitwd):
     gitwd.git.commit("--no-edit")
 
     return True
-
-
-

@@ -29,9 +29,7 @@ import requests
 from repo_exception import RepoException
 
 logging.basicConfig(
-    format="%(levelname)s - %(message)s",
-    stream=sys.stdout,
-    level=logging.INFO
+    format="%(levelname)s - %(message)s", stream=sys.stdout, level=logging.INFO
 )
 
 CREDENTIALS_DIR = os.getenv("CREDENTIALS_DIR", "/dev/shm/credentials")
@@ -190,7 +188,8 @@ def _init_working_dir(
     logging.info("Checking out %s", working_branch)
 
     logging.info(
-        "Checking for existing rebase branch %s in %s", rebase.branch, rebase.url)
+        "Checking for existing rebase branch %s in %s", rebase.branch, rebase.url
+    )
     rebase_ref = gitwd.git.ls_remote("rebase", rebase.branch, heads=True)
     if len(rebase_ref) > 0:
         logging.info("Fetching existing rebase branch")
@@ -240,13 +239,14 @@ def run(
         gh_app = _github_user_login(user_token)
         gh_cloner_app = _github_user_login(user_token)
 
-        with open(user_credentials, "w", encoding='utf-8') as user_credentials_file:
+        with open(user_credentials, "w", encoding="utf-8") as user_credentials_file:
             user_credentials_file.write(user_token)
     else:
         # App credentials for accessing the destination and opening a PR
         gh_app = _github_app_login(gh_app_id, gh_app_key)
         gh_app = _github_login_for_repo(
-            gh_app, dest.ns, dest.name, gh_app_id, gh_app_key)
+            gh_app, dest.ns, dest.name, gh_app_id, gh_app_key
+        )
 
         # App credentials for writing to the rebase repo
         gh_cloner_app = _github_app_login(gh_cloner_id, gh_cloner_key)
@@ -254,9 +254,9 @@ def run(
             gh_cloner_app, rebase.ns, rebase.name, gh_cloner_id, gh_cloner_key
         )
 
-        with open(app_credentials, "w", encoding='utf-8') as app_credentials_file:
+        with open(app_credentials, "w", encoding="utf-8") as app_credentials_file:
             app_credentials_file.write(gh_app.session.auth.token)
-        with open(cloner_credentials, "w", encoding='utf-8') as cloner_credentials_file:
+        with open(cloner_credentials, "w", encoding="utf-8") as cloner_credentials_file:
             cloner_credentials_file.write(gh_cloner_app.session.auth.token)
 
     try:
@@ -265,7 +265,9 @@ def run(
         rebase_repo = gh_cloner_app.repository(rebase.ns, rebase.name)
         logging.info("rebase repository is %s", rebase_repo.clone_url)
     except Exception as ex:
-        raise RepoException(f"I got an error fetching repo information from GitHub: {ex}") from ex
+        raise RepoException(
+            f"I got an error fetching repo information from GitHub: {ex}"
+        ) from ex
 
     try:
         os.mkdir(working_dir)
@@ -275,12 +277,7 @@ def run(
     try:
         os.chdir(working_dir)
         gitwd = _init_working_dir(
-            source,
-            dest,
-            rebase,
-            user_auth,
-            git_username,
-            git_email
+            source, dest, rebase, user_auth, git_username, git_email
         )
     except Exception as ex:
         raise RepoException(
@@ -300,8 +297,7 @@ def run(
         if push_required:
             logging.info("Existing rebase branch needs to be updated.")
             result = gitwd.remotes.rebase.push(
-                refspec=f"HEAD:{rebase.branch}",
-                force=True
+                refspec=f"HEAD:{rebase.branch}", force=True
             )
             if result[0].flags & git.PushInfo.ERROR != 0:
                 raise Exception(f"Error pushing to {rebase}: {result[0].summary}")
@@ -315,9 +311,7 @@ def run(
             pr_url = _create_pr(gh_app, dest, rebase, pr_title)
             logging.info("PR is %s", pr_url)
     except Exception as ex:
-        raise RepoException(
-            f"I got an error creating a PR: {ex}"
-        ) from ex
+        raise RepoException(f"I got an error creating a PR: {ex}") from ex
 
     if push_required:
         if not pr_available:

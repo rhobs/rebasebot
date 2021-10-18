@@ -24,16 +24,14 @@ import re
 import sys
 import validators
 
-from rebasebot import bot, gomod, jsonnet_update
+from rebasebot import bot, jsonnet_update, slack
 
 
 GitHubBranch = namedtuple("GitHubBranch", ["url", "ns", "name", "branch"])
 GitBranch = namedtuple("GitBranch", ["url", "reference"])
 
 logging.basicConfig(
-    format="%(levelname)s - %(message)s",
-    stream=sys.stdout,
-    level=logging.INFO
+    format="%(levelname)s - %(message)s", stream=sys.stdout, level=logging.INFO
 )
 
 
@@ -46,7 +44,6 @@ class GitHubBranchAction(argparse.Action):
     """
 
     GITHUBBRANCH = re.compile("^(?P<ns>[^/]+)/(?P<name>[^:]+):(?P<branch>.*)$")
-
 
     def __call__(self, parser, namespace, values, option_string=None):
         match = self.GITHUBBRANCH.match(values)
@@ -63,7 +60,7 @@ class GitHubBranchAction(argparse.Action):
                 f"https://github.com/{match.group('ns')}/{match.group('name')}",
                 match.group("ns"),
                 match.group("name"),
-                match.group("branch")
+                match.group("branch"),
             ),
         )
 
@@ -75,8 +72,8 @@ class GitHubUserTokenAction(argparse.Action):
     """
 
     def __call__(self, parser, namespace, token, option_string=None):
-        with open(token, "r", encoding='utf-8') as app_key_file:
-            gh_user_token = app_key_file.read().strip().encode().decode('utf-8')
+        with open(token, "r", encoding="utf-8") as app_key_file:
+            gh_user_token = app_key_file.read().strip().encode().decode("utf-8")
             setattr(namespace, self.dest, gh_user_token)
 
 
@@ -87,7 +84,7 @@ class PrivateKeyFileAction(argparse.Action):
     """
 
     def __call__(self, parser, namespace, path, option_string=None):
-        with open(path, "r", encoding='utf-8') as private_key:
+        with open(path, "r", encoding="utf-8") as private_key:
             private_key_text = private_key.read().strip().encode()
             setattr(namespace, self.dest, private_key_text)
 
@@ -99,9 +96,10 @@ class SlackWebHookAction(argparse.Action):
     """
 
     def __call__(self, parser, namespace, path, option_string=None):
-        with open(path, "r", encoding='utf-8') as app_key_file:
+        with open(path, "r", encoding="utf-8") as app_key_file:
             slack_webhook = app_key_file.read().strip()
             setattr(namespace, self.dest, slack_webhook)
+
 
 class GitBranchAction(argparse.Action):
     """An action to take a git branch argument in the form:
@@ -127,49 +125,6 @@ class GitBranchAction(argparse.Action):
 
         setattr(namespace, self.dest, GitBranch(url, reference))
 
-
-# parse_cli_arguments parses command line arguments using argparse and returns
-# an object representing the populated namespace, and a list of errors
-#
-# testing_args should be left empty, except for during testing
-def _add_merge_args(parser):
-    parser.add_argument(
-        "--source",
-        "-s",
-        type=str,
-        required=False,
-        action=GitBranchAction,
-        help=(
-            "The source/upstream git repo to rebase changes onto in the form "
-            "<git url>:<branch>. Note that unlike dest and rebase this does "
-            "not need to be a GitHub url, hence its syntax is different."
-        ),
-    )
-    parser.add_argument(
-        "--ours",
-        type=str,
-        required=False,
-        action='append',
-        help=f"Files which can be resolved using 'git checkout --ours' action",
-    )
-    parser.add_argument(
-        "--theirs",
-        type=str,
-        required=False,
-        action='append',
-        help=f"Files which can be resolved using 'git checkout --theirs' action",
-    )
-    parser.add_argument(
-        "--update-go-modules",
-        action="store_true",
-        default=False,
-        required=False,
-        help="When enabled, the bot will update and vendor the go modules "
-             "in a separate commit.",
-    )
-
-def _add_jsonnet_update_args(parser):
-    pass
 
 def _add_common_args(parser):
     _form_text = (
@@ -262,65 +217,59 @@ def _add_common_args(parser):
         help="When enabled, the bot will not create a PR.",
     )
 
-def _merge(args):
-    success = bot.run(
-        args.source,
-        args.dest,
-        args.rebase,
-        args.working_dir,
-        args.git_username,
-        args.git_email,
-        args.github_user_token,
-        args.github_app_id,
-        args.github_app_key,
-        args.github_cloner_id,
-        args.github_cloner_key,
-        [],
-        f"Merge {args.source.url}:{args.source.reference} into {args.dest.branch}",
-        dry_run=args.dry_run,
-    )
-    return success
 
 def _update_jsonnet_deps(args):
-    success = bot.run(
-        None,
-        args.dest,
-        args.rebase,
-        args.working_dir,
-        args.git_username,
-        args.git_email,
-        args.github_user_token,
-        args.github_app_id,
-        args.github_app_key,
-        args.github_cloner_id,
-        args.github_cloner_key,
-        [jsonnet_update.commit_jsonnet_deps_updates],
-        pr_title="Update jsonnet dependencies to latest",
-        dry_run=args.dry_run,
-    )
-    return success
+    try:
+        bot.run(
+            None,
+            args.dest,
+            args.rebase,
+            args.working_dir,
+            args.git_username,
+            args.git_email,
+            args.github_user_token,
+            args.github_app_id,
+            args.github_app_key,
+            args.github_cloner_id,
+            args.github_cloner_key,
+            [jsonnet_update.commit_jsonnet_deps_updates],
+            pr_title="Update jsonnet dependencies to latest",
+            dry_run=args.dry_run,
+        )
+    except RepoException as ex:
+        log.exception(ex)
+        slack.send_message(ex.msg)
 
+
+# parse_cli_arguments parses command line arguments using argparse and returns
+# an object representing the populated namespace, and a list of errors
+#
+# testing_args should be left empty, except for during testing
 def _parse_cli_arguments(testing_args=None):
     parser = argparse.ArgumentParser(
-        description="Rebase on changes from an upstream repo")
+        description="Rebase on changes from an upstream repo"
+    )
 
     parent_parser = argparse.ArgumentParser(add_help=False)
     _add_common_args(parent_parser)
 
     subparsers = parser.add_subparsers()
 
-    merge = subparsers.add_parser('merge', help='Perform git merge between dest and source', parents=[parent_parser])
-    _add_merge_args(merge)
-    merge.set_defaults(func=_merge)
-
-    jsonnet = subparsers.add_parser('update-jsonnet-deps', help='Perform jsonnet dependency update', parents=[parent_parser])
-    _add_jsonnet_update_args(jsonnet)
+    jsonnet = subparsers.add_parser(
+        "update-jsonnet-deps",
+        help="Perform jsonnet dependency update",
+        parents=[parent_parser],
+    )
     jsonnet.set_defaults(func=_update_jsonnet_deps)
 
     if testing_args is not None:
         args = parser.parse_args(testing_args)
     else:
         args = parser.parse_args()
+
+    if len(sys.argv) < 2:
+        parser.print_help()
+        sys.exit(0)
 
     return args
 
@@ -329,7 +278,6 @@ def main():
     """Rebase Bot entry point function."""
     args = _parse_cli_arguments()
     success = args.func(args)
-
 
     if success:
         sys.exit(0)
