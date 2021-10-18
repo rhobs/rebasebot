@@ -207,6 +207,7 @@ def _add_common_args(parser):
         "--slack-webhook",
         type=str,
         required=False,
+        action=SlackWebHookAction,
         help="The path where credentials for the slack webhook are.",
     )
     parser.add_argument(
@@ -219,26 +220,22 @@ def _add_common_args(parser):
 
 
 def _update_jsonnet_deps(args):
-    try:
-        bot.run(
-            None,
-            args.dest,
-            args.rebase,
-            args.working_dir,
-            args.git_username,
-            args.git_email,
-            args.github_user_token,
-            args.github_app_id,
-            args.github_app_key,
-            args.github_cloner_id,
-            args.github_cloner_key,
-            [jsonnet_update.commit_jsonnet_deps_updates],
-            pr_title="Update jsonnet dependencies to latest",
-            dry_run=args.dry_run,
-        )
-    except RepoException as ex:
-        log.exception(ex)
-        slack.send_message(ex.msg)
+    return bot.run(
+        None,
+        args.dest,
+        args.rebase,
+        args.working_dir,
+        args.git_username,
+        args.git_email,
+        args.github_user_token,
+        args.github_app_id,
+        args.github_app_key,
+        args.github_cloner_id,
+        args.github_cloner_key,
+        [jsonnet_update.commit_jsonnet_deps_updates],
+        pr_title="Update jsonnet dependencies to latest",
+        dry_run=args.dry_run,
+    )
 
 
 # parse_cli_arguments parses command line arguments using argparse and returns
@@ -277,12 +274,14 @@ def _parse_cli_arguments(testing_args=None):
 def main():
     """Rebase Bot entry point function."""
     args = _parse_cli_arguments()
-    success = args.func(args)
-
-    if success:
-        sys.exit(0)
+    try:
+        msg = args.func(args)
+    except RepoException as ex:
+        logging.exception(ex)
+        slack.send_message(args.slack_webhook, ex.msg)
     else:
-        sys.exit(1)
+        logging.info(msg)
+        slack.send_message(args.slack_webhook, msg)
 
 
 if __name__ == "__main__":

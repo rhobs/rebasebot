@@ -24,7 +24,6 @@ import git
 import git.compat
 import github3
 import github3.exceptions as gh_exceptions
-import requests
 
 from repo_exception import RepoException
 
@@ -36,12 +35,6 @@ CREDENTIALS_DIR = os.getenv("CREDENTIALS_DIR", "/dev/shm/credentials")
 app_credentials = os.path.join(CREDENTIALS_DIR, "app")
 cloner_credentials = os.path.join(CREDENTIALS_DIR, "cloner")
 user_credentials = os.path.join(CREDENTIALS_DIR, "user")
-
-
-def _message_slack(webhook_url, msg):
-    if webhook_url is None:
-        return
-    requests.post(webhook_url, json={"text": msg})
 
 
 def _is_push_required(gitwd, dest, rebase):
