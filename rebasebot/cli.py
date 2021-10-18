@@ -16,17 +16,25 @@
 
 """This module parses CLI arguments for the Rebase Bot."""
 
+import logging
 import argparse
 from collections import namedtuple
+from functools import partial
 import re
 import sys
 import validators
 
-from rebasebot import bot
+from rebasebot import bot, gomod, jsonnet_update
 
 
 GitHubBranch = namedtuple("GitHubBranch", ["url", "ns", "name", "branch"])
 GitBranch = namedtuple("GitBranch", ["url", "reference"])
+
+logging.basicConfig(
+    format="%(levelname)s - %(message)s",
+    stream=sys.stdout,
+    level=logging.INFO
+)
 
 
 class GitHubBranchAction(argparse.Action):
@@ -259,8 +267,6 @@ def _merge(args):
         args.source,
         args.dest,
         args.rebase,
-        args.theirs,
-        args.ours,
         args.working_dir,
         args.git_username,
         args.git_email,
@@ -269,9 +275,8 @@ def _merge(args):
         args.github_app_key,
         args.github_cloner_id,
         args.github_cloner_key,
-        args.slack_webhook,
-        update_go_modules=args.update_go_modules,
-        update_jsonnet_deps=args.update_jsonnet_deps,
+        [],
+        f"Merge {args.source.url}:{args.source.reference} into {args.dest.branch}",
         dry_run=args.dry_run,
     )
     return success
@@ -281,8 +286,6 @@ def _update_jsonnet_deps(args):
         None,
         args.dest,
         args.rebase,
-        None,
-        None,
         args.working_dir,
         args.git_username,
         args.git_email,
@@ -291,9 +294,8 @@ def _update_jsonnet_deps(args):
         args.github_app_key,
         args.github_cloner_id,
         args.github_cloner_key,
-        args.slack_webhook,
-        update_go_modules=False,
-        update_jsonnet_deps=True,
+        [jsonnet_update.commit_jsonnet_deps_updates],
+        pr_title="Update jsonnet dependencies to latest",
         dry_run=args.dry_run,
     )
     return success
