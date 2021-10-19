@@ -16,17 +16,23 @@
 
 """This module parses CLI arguments for the Rebase Bot."""
 
+import logging
 import argparse
 from collections import namedtuple
+from functools import partial
 import re
 import sys
 import validators
 
-from rebasebot import bot
+from rebasebot import bot, jsonnet_update, slack
 
 
 GitHubBranch = namedtuple("GitHubBranch", ["url", "ns", "name", "branch"])
-GitBranch = namedtuple("GitBranch", ["url", "branch"])
+GitBranch = namedtuple("GitBranch", ["url", "reference"])
+
+logging.basicConfig(
+    format="%(levelname)s - %(message)s", stream=sys.stdout, level=logging.INFO
+)
 
 
 class GitHubBranchAction(argparse.Action):
@@ -43,8 +49,8 @@ class GitHubBranchAction(argparse.Action):
         match = self.GITHUBBRANCH.match(values)
         if match is None:
             parser.error(
-                f"GitHub branch value for {option_string} must be in "
-                f"the form <user or organisation>/<repo>:<branch>"
+                "GitHub branch value for {option_string} must be in "
+                "the form <user or organisation>/<repo>:[<branch>|<tag>|sha1>]"
             )
 
         setattr(
@@ -54,60 +60,78 @@ class GitHubBranchAction(argparse.Action):
                 f"https://github.com/{match.group('ns')}/{match.group('name')}",
                 match.group("ns"),
                 match.group("name"),
-                match.group("branch")
+                match.group("branch"),
             ),
         )
+
+
+class GitHubUserTokenAction(argparse.Action):
+    """An action to take a Github token and validates it:
+
+    The argument will be return as a str object.
+    """
+
+    def __call__(self, parser, namespace, token, option_string=None):
+        with open(token, "r", encoding="utf-8") as app_key_file:
+            gh_user_token = app_key_file.read().strip().encode().decode("utf-8")
+            setattr(namespace, self.dest, gh_user_token)
+
+
+class PrivateKeyFileAction(argparse.Action):
+    """An action to take a private key and validates it:
+
+    The argument will be return as a str object.
+    """
+
+    def __call__(self, parser, namespace, path, option_string=None):
+        with open(path, "r", encoding="utf-8") as private_key:
+            private_key_text = private_key.read().strip().encode()
+            setattr(namespace, self.dest, private_key_text)
+
+
+class SlackWebHookAction(argparse.Action):
+    """An action to take a private key and validates it:
+
+    The argument will be return as a str object.
+    """
+
+    def __call__(self, parser, namespace, path, option_string=None):
+        with open(path, "r", encoding="utf-8") as app_key_file:
+            slack_webhook = app_key_file.read().strip()
+            setattr(namespace, self.dest, slack_webhook)
 
 
 class GitBranchAction(argparse.Action):
     """An action to take a git branch argument in the form:
 
-      <git url>:<branch>
+      <git url>:<reference>
 
     The argument will be return as a GitBranch object.
     """
 
     def __call__(self, parser, namespace, values, option_string=None):
         msg = (
-            f"Git branch value for {option_string} must be in "
-            f"the form <git url>:<branch>"
+            f"Git ref value for {option_string} must be in "
+            f"the form <git url>:<reference>"
         )
 
         split = values.rsplit(":", 1)
         if len(split) != 2:
             parser.error(msg)
 
-        url, branch = split
+        url, reference = split
         if not validators.url(url):
             parser.error(msg)
 
-        setattr(namespace, self.dest, GitBranch(url, branch))
+        setattr(namespace, self.dest, GitBranch(url, reference))
 
 
-# parse_cli_arguments parses command line arguments using argparse and returns
-# an object representing the populated namespace, and a list of errors
-#
-# testing_args should be left empty, except for during testing
-def _parse_cli_arguments(testing_args=None):
+def _add_common_args(parser):
     _form_text = (
         "in the form <user or organisation>/<repo>:<branch>, "
         "e.g. kubernetes/cloud-provider-openstack:master"
     )
 
-    parser = argparse.ArgumentParser(
-        description="Rebase on changes from an upstream repo")
-    parser.add_argument(
-        "--source",
-        "-s",
-        type=str,
-        required=True,
-        action=GitBranchAction,
-        help=(
-            "The source/upstream git repo to rebase changes onto in the form "
-            "<git url>:<branch>. Note that unlike dest and rebase this does "
-            "not need to be a GitHub url, hence its syntax is different."
-        ),
-    )
     parser.add_argument(
         "--dest",
         "-d",
@@ -148,6 +172,7 @@ def _parse_cli_arguments(testing_args=None):
         "--github-user-token",
         type=str,
         required=False,
+        action=GitHubUserTokenAction,
         help="The path to a github user access token.",
     )
     parser.add_argument(
@@ -161,6 +186,7 @@ def _parse_cli_arguments(testing_args=None):
         "--github-app-key",
         type=str,
         required=False,
+        action=PrivateKeyFileAction,
         help="The path to a github app private key.",
     )
     parser.add_argument(
@@ -174,21 +200,15 @@ def _parse_cli_arguments(testing_args=None):
         "--github-cloner-key",
         type=str,
         required=False,
+        action=PrivateKeyFileAction,
         help="The path to a github app private key.",
     )
     parser.add_argument(
         "--slack-webhook",
         type=str,
         required=False,
+        action=SlackWebHookAction,
         help="The path where credentials for the slack webhook are.",
-    )
-    parser.add_argument(
-        "--update-go-modules",
-        action="store_true",
-        default=False,
-        required=False,
-        help="When enabled, the bot will update and vendor the go modules "
-             "in a separate commit.",
     )
     parser.add_argument(
         "--dry-run",
@@ -198,10 +218,55 @@ def _parse_cli_arguments(testing_args=None):
         help="When enabled, the bot will not create a PR.",
     )
 
+
+def _update_jsonnet_deps(args):
+    return bot.run(
+        None,
+        args.dest,
+        args.rebase,
+        args.working_dir,
+        args.git_username,
+        args.git_email,
+        args.github_user_token,
+        args.github_app_id,
+        args.github_app_key,
+        args.github_cloner_id,
+        args.github_cloner_key,
+        [jsonnet_update.commit_jsonnet_deps_updates],
+        pr_title="Update jsonnet dependencies to latest",
+        dry_run=args.dry_run,
+    )
+
+
+# parse_cli_arguments parses command line arguments using argparse and returns
+# an object representing the populated namespace, and a list of errors
+#
+# testing_args should be left empty, except for during testing
+def _parse_cli_arguments(testing_args=None):
+    parser = argparse.ArgumentParser(
+        description="Rebase on changes from an upstream repo"
+    )
+
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    _add_common_args(parent_parser)
+
+    subparsers = parser.add_subparsers()
+
+    jsonnet = subparsers.add_parser(
+        "update-jsonnet-deps",
+        help="Perform jsonnet dependency update",
+        parents=[parent_parser],
+    )
+    jsonnet.set_defaults(func=_update_jsonnet_deps)
+
     if testing_args is not None:
         args = parser.parse_args(testing_args)
     else:
         args = parser.parse_args()
+
+    if len(sys.argv) < 2:
+        parser.print_help()
+        sys.exit(0)
 
     return args
 
@@ -209,48 +274,14 @@ def _parse_cli_arguments(testing_args=None):
 def main():
     """Rebase Bot entry point function."""
     args = _parse_cli_arguments()
-
-    gh_app_key = ""
-    if args.github_app_key is not None:
-        with open(args.github_app_key, "r", encoding='utf-8') as app_key_file:
-            gh_app_key = app_key_file.read().strip().encode()
-
-    gh_cloner_key = ""
-    if args.github_cloner_key is not None:
-        with open(args.github_cloner_key, "r", encoding='utf-8') as app_key_file:
-            gh_cloner_key = app_key_file.read().strip().encode()
-
-    gh_user_token = ""
-    if args.github_user_token is not None:
-        with open(args.github_user_token, "r", encoding='utf-8') as app_key_file:
-            gh_user_token = app_key_file.read().strip().encode().decode('utf-8')
-
-    slack_webhook = None
-    if args.slack_webhook is not None:
-        with open(args.slack_webhook, "r", encoding='utf-8') as app_key_file:
-            slack_webhook = app_key_file.read().strip()
-
-    success = bot.run(
-        args.source,
-        args.dest,
-        args.rebase,
-        args.working_dir,
-        args.git_username,
-        args.git_email,
-        gh_user_token,
-        args.github_app_id,
-        gh_app_key,
-        args.github_cloner_id,
-        gh_cloner_key,
-        slack_webhook,
-        update_go_modules=args.update_go_modules,
-        dry_run=args.dry_run,
-    )
-
-    if success:
-        sys.exit(0)
+    try:
+        msg = args.func(args)
+    except RepoException as ex:
+        logging.exception(ex)
+        slack.send_message(args.slack_webhook, ex.msg)
     else:
-        sys.exit(1)
+        logging.info(msg)
+        slack.send_message(args.slack_webhook, msg)
 
 
 if __name__ == "__main__":

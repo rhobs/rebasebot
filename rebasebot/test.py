@@ -58,9 +58,7 @@ class test_cli(unittest.TestCase):
         args = cli._parse_cli_arguments(args_dict_to_list(valid_args))
 
         # sanity checks
-        self.assertEqual(
-            args.source.url, "https://github.com/kubernetes/autoscaler"
-        )
+        self.assertEqual(args.source.url, "https://github.com/kubernetes/autoscaler")
         self.assertEqual(args.source.branch, "master")
         self.assertEqual(args.dest.ns, "openshift")
         self.assertEqual(args.dest.name, "kubernetes-autoscaler")
